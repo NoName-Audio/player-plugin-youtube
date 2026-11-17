@@ -1,0 +1,18 @@
+{
+  "id": "player.youtube",
+  "name": "YouTube",
+  "version": "1.0.0",
+  "apiVersion": 2,
+  "description": "Search YouTube, preview audio and save it to your library using yt-dlp.",
+  "platforms": ["macos", "windows", "linux"],
+  "permissions": ["ui", "playback.read", "playback.control", "library.import", "storage", "media.source"],
+  "contributions": [
+    {"id": "search", "kind": "search", "label": "YouTube"},
+    {"id": "downloads", "kind": "player-widget", "label": "YouTube", "slot": "player.status"}
+  ],
+  "author": {"name": "Player contributors", "url": "https://github.com/NoName-Audio/player/graphs/contributors"},
+  "repository": "https://github.com/NoName-Audio/player-plugin-youtube",
+  "homepage": "https://github.com/NoName-Audio/player-plugin-youtube",
+  "image": "assets/youtube.png",
+  "pollIntervalMs": 250
+}

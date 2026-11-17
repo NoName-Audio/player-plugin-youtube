@@ -1,0 +1,31 @@
+Player YouTube plugin bundled runtime attribution
+
+Pinned yt-dlp 2026.10.26, copyright yt-dlp contributors.
+Project/source: https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
+Official binaries and checksums: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26
+Source archive: https://github.com/yt-dlp/yt-dlp/archive/refs/tags/2026.10.26.tar.gz
+Build recipes and dependency pins: https://github.com/yt-dlp/yt-dlp/blob/2026.10.26/.github/workflows/build.yml
+The original yt-dlp source is Unlicense (yt-dlp-LICENSE). The standalone
+PyInstaller combined binaries include GPLv3+ dependencies and are GPLv3+ as a
+combined work. See GPL-3.0.txt and yt-dlp-THIRD-PARTY-LICENSES.txt for full license
+texts, copyright notices and component attribution, including Python, bundled EJS,
+astring (MIT), meriyah (ISC), and other runtime dependencies. Redistribution must
+provide corresponding source for the exact combined work as required by GPLv3+;
+a link to plugin source alone does not satisfy this requirement.
+
+Pinned Deno 2.9.8, copyright the Deno authors, MIT license (deno-LICENSE).
+Project/source: https://github.com/denoland/deno/tree/v2.9.8
+Source archive: https://github.com/denoland/deno/archive/refs/tags/v2.9.8.tar.gz
+Official binaries and checksums: https://github.com/denoland/deno/releases/tag/v2.9.8
+Deno includes additional third-party components and licenses. Upstream notices
+in the pinned source tree include:
+https://github.com/denoland/deno/blob/v2.9.8/cli/tsc/dts/node/LICENSE
+https://github.com/denoland/deno/blob/v2.9.8/cli/tsc/dts/node/undici/LICENSE
+https://github.com/denoland/deno/blob/v2.9.8/ext/webgpu/LICENSE.md
+These are source-tree notices, not an exhaustive inventory of all transitive
+dependencies. Preserve applicable dependency notices when redistributing.
+Deno does not provide a `deno license` subcommand.
+
+The build-time downloader uses only official GitHub HTTPS release assets.
+Pinned asset SHA-256 values are recorded in ../tools/runtimes.json in the plugin
+source. Runtime executables are not fetched or updated during plugin activation.

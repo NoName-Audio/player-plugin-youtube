@@ -1,0 +1,3 @@
+/target/
+*.player-plugin
+__pycache__/

@@ -1,0 +1,18 @@
+[package]
+name = "player-youtube-plugin"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["ffi"]
+ffi = []
+
+[dependencies]
+player-plugin-sdk = { git = "https://github.com/NoName-Audio/player-plugins.git", rev = "c4f527902f130424dbc217c6006fc42a583a7b86" }
+serde_json = "1"
+
+[dev-dependencies]
+player-plugin-sdk = { git = "https://github.com/NoName-Audio/player-plugins.git", rev = "c4f527902f130424dbc217c6006fc42a583a7b86", features = ["testing"] }
