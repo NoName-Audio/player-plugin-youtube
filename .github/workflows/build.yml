@@ -1,0 +1,117 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: youtube-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: macos-aarch64
+            rust-target: aarch64-apple-darwin
+            library: libplayer_youtube_plugin.dylib
+          - os: macos-15-intel
+            target: macos-x86_64
+            rust-target: x86_64-apple-darwin
+            library: libplayer_youtube_plugin.dylib
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            rust-target: x86_64-unknown-linux-gnu
+            library: libplayer_youtube_plugin.so
+          - os: ubuntu-22.04-arm
+            target: linux-aarch64
+            rust-target: aarch64-unknown-linux-gnu
+            library: libplayer_youtube_plugin.so
+          - os: windows-latest
+            target: windows-x86_64
+            rust-target: x86_64-pc-windows-msvc
+            library: player_youtube_plugin.dll
+          - os: windows-11-arm
+            target: windows-aarch64
+            rust-target: aarch64-pc-windows-msvc
+            library: player_youtube_plugin.dll
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+      - name: Verify release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -c 'import json, os, tomllib; version = json.load(open("plugin.json"))["version"]; assert os.environ["RELEASE_TAG"] == "v" + version; assert tomllib.load(open("Cargo.toml", "rb"))["package"]["version"] == version'
+      - name: Test plugin
+        run: cargo test --locked --target '${{ matrix.rust-target }}'
+      - name: Build plugin
+        run: cargo build --locked --release --target '${{ matrix.rust-target }}'
+      - name: Install pinned SDK packer
+        run: cargo install --locked --git https://github.com/NoName-Audio/player-plugins.git --rev c4f527902f130424dbc217c6006fc42a583a7b86 player-plugin-sdk --bin player-plugin-pack
+      - name: Bundle verified runtimes and package
+        env:
+          TARGET_KEY: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust-target }}
+          LIBRARY: ${{ matrix.library }}
+        run: |
+          set -euo pipefail
+          python tools/bundle-runtimes.py --target "$TARGET_KEY" --output bundled-runtimes
+          mkdir -p dist
+          runtime_args=()
+          for runtime in bundled-runtimes/*; do
+            runtime_args+=(--runtime "${TARGET_KEY}:$(basename "$runtime")=$runtime")
+          done
+          player-plugin-pack . "dist/player.youtube-${TARGET_KEY}.player-plugin" "${TARGET_KEY}=target/${RUST_TARGET}/release/${LIBRARY}" "${runtime_args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-${{ matrix.target }}
+          path: dist/*.player-plugin
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: youtube-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$(find dist -name '*.player-plugin' -type f | wc -l)" -eq 6
+          (cd dist && sha256sum *.player-plugin > SHA256SUMS)
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "YouTube ${RELEASE_TAG}" --notes 'YouTube plugin for Player. Choose the package matching your OS and architecture. Includes private yt-dlp and Deno runtimes and their license notices. Requires Player with bundled-runtime package support.'
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
