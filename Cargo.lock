@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "player-youtube-plugin"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "player-plugin-sdk",
  "serde_json",
