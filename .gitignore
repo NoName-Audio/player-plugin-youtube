@@ -1,3 +1,7 @@
 /target/
 *.player-plugin
 __pycache__/
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/local.properties

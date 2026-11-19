@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="Player YouTube" android:allowBackup="false">
+        <meta-data android:name="dev.verncat.player.plugin.API" android:value="2" />
+        <meta-data android:name="dev.verncat.player.plugin.ID" android:value="player.youtube" />
+        <meta-data android:name="dev.verncat.player.plugin.CLASS" android:value="dev.verncat.player.plugins.youtube.YoutubePluginService" />
+        <activity android:name=".DiscoveryActivity" android:exported="true">
+            <intent-filter><action android:name="dev.verncat.player.PLUGIN" /></intent-filter>
+        </activity>
+    </application>
+</manifest>

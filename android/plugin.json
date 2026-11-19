@@ -1,0 +1,30 @@
+{
+  "id": "player.youtube",
+  "name": "YouTube",
+  "version": "1.0.0",
+  "apiVersion": 2,
+  "description": "Download shared YouTube audio to your library.",
+  "platforms": [
+    "android"
+  ],
+  "permissions": [
+    "native.android",
+    "storage",
+    "media.source",
+    "library.import"
+  ],
+  "contributions": [
+    {
+      "id": "share",
+      "kind": "share-handler",
+      "label": "YouTube"
+    }
+  ],
+  "author": {
+    "name": "Player contributors",
+    "url": "https://github.com/NoName-Audio/player/graphs/contributors"
+  },
+  "repository": "https://github.com/NoName-Audio/player-plugin-youtube",
+  "homepage": "https://github.com/NoName-Audio/player-plugin-youtube",
+  "image": "../assets/youtube.png"
+}

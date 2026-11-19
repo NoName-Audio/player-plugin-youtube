@@ -1,0 +1,44 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+
+plugins {
+    id 'com.android.application' version '8.11.0'
+    id 'org.jetbrains.kotlin.android' version '2.2.21'
+}
+
+def descriptor = new JsonSlurper().parse(file('plugin.json'))
+def versionParts = descriptor.version.tokenize('.').collect { it.toInteger() }
+def assetDir = layout.buildDirectory.dir('generated/pluginAssets')
+def generateDescriptor = tasks.register('generatePluginDescriptor') {
+    inputs.files('plugin.json', descriptor.image)
+    outputs.dir(assetDir)
+    doLast {
+        def manifest = new JsonSlurper().parse(file('plugin.json'))
+        manifest.image = 'data:image/png;base64,' + file(manifest.image).bytes.encodeBase64().toString()
+        def output = assetDir.get().file('player-plugin.json').asFile
+        output.parentFile.mkdirs()
+        output.text = JsonOutput.toJson([manifest: manifest, native: [kind: 'android-apk']])
+    }
+}
+
+android {
+    namespace 'dev.verncat.player.plugins.youtube'
+    compileSdk 36
+    kotlinOptions { jvmTarget = '1.8' }
+    defaultConfig {
+        applicationId 'dev.verncat.player.plugins.youtube'
+        minSdk 26
+        targetSdk 36
+        versionName descriptor.version
+        versionCode versionParts[0] * 1000000 + versionParts[1] * 1000 + versionParts[2]
+    }
+    splits { abi { enable true; reset(); include 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'; universalApk false } }
+    sourceSets.main.assets.srcDir(assetDir)
+    packaging.jniLibs.useLegacyPackaging = true
+}
+tasks.named('preBuild') { dependsOn(generateDescriptor) }
+
+dependencies {
+    implementation 'io.github.junkfood02.youtubedl-android:library:0.18.1'
+    testImplementation 'junit:junit:4.13.2'
+}

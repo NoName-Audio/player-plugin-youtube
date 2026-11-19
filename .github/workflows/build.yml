@@ -89,9 +89,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Build standalone APKs
+        working-directory: android
+        run: ./gradlew testDebugUnitTest assembleDebug
+      - name: Collect installable ABI-specific APKs
+        run: |
+          mkdir -p dist
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            apk="android/build/outputs/apk/debug/youtube-$abi-debug.apk"
+            test "$(stat -c %s "$apk")" -le 67108864
+            unzip -t "$apk" assets/player-plugin.json
+            cp "$apk" "dist/player.youtube-android-$abi.apk"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youtube-android
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -109,9 +138,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(find dist -name '*.player-plugin' -type f | wc -l)" -eq 6
-          (cd dist && sha256sum *.player-plugin > SHA256SUMS)
+          test "$(find dist -name '*.apk' -type f | wc -l)" -eq 4
+          (cd dist && sha256sum *.player-plugin *.apk > SHA256SUMS)
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "YouTube ${RELEASE_TAG}" --notes 'YouTube plugin for Player. Choose the package matching your OS and architecture. Includes private yt-dlp and Deno runtimes and their license notices. Requires Player with bundled-runtime package support.'
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "YouTube ${RELEASE_TAG}" --notes 'Choose a desktop .player-plugin package or the standalone Android APK matching your CPU. Android builds use a CI debug signer; updates from another run require uninstalling the previous APK and reviewing the plugin again in Player.'
           fi
           gh release upload "$RELEASE_TAG" dist/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false
