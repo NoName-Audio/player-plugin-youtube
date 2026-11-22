@@ -91,6 +91,15 @@ impl Plugin {
                 Ok(_) => failure = Some("The downloaded file could not be indexed".into()),
                 Err(e) => failure = Some(e),
             }
+            if !started && !self.preview_started.contains(id) && !self.playing(id) {
+                if let Some(path) = self.paths.remove(id) {
+                    if let Some(parent) = path.parent().filter(|p| p.parent() == Some(self.root.as_path())) {
+                        let _ = std::fs::remove_dir_all(parent);
+                    }
+                }
+                self.tokens.remove(id);
+                self.completed.remove(id);
+            }
         }
         if let Some(e) = failure { return Err(e); }
         Ok(Value::Null)
