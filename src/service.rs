@@ -110,7 +110,7 @@ impl Service {
         Ok(())
     }
 
-    pub fn download(&mut self, id: String, url: String, executable: String, root: PathBuf) -> Result<(), String> {
+    pub fn download(&mut self, id: String, url: String, executable: String, root: PathBuf, options: DownloadOptions) -> Result<(), String> {
         let url = youtube_url(&url)?;
         self.reap();
         if self.jobs.iter().filter(|j| !j.search).count() >= 2 {
@@ -124,7 +124,7 @@ impl Service {
         let sender = self.sender.clone();
         let thread_id = id.clone();
         let worker = thread::Builder::new().name("youtube-download".into()).spawn(move || {
-            let result = download_file(&url, &executable, &root, &signal, |path| {
+            let result = download_file(&url, &executable, &root, &signal, options, |path| {
                 let _ = sender.send((signal.clone(), Event::Progress { id: thread_id.clone(), path }));
             });
             let _ = sender.send((signal.clone(), Event::Download { id: thread_id, result }));
@@ -368,35 +368,47 @@ fn final_path(stage: &Path, data: &[u8]) -> Result<PathBuf, String> {
     }
     let canonical = fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if canonical.parent() != Some(stage) { return Err("Downloaded audio escaped its download directory".into()); }
-    if !matches!(canonical.extension().and_then(|e| e.to_str()), Some("m4a" | "webm" | "opus")) {
+    if !matches!(canonical.extension().and_then(|e| e.to_str()), Some("m4a" | "webm" | "opus" | "mp4")) {
         return Err("yt-dlp returned an unsupported audio container".into());
     }
     Ok(canonical)
 }
 
-fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, mut ready: impl FnMut(PathBuf)) -> Result<PathBuf, String> {
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct DownloadOptions {
+    pub video: bool,
+    pub save_data: bool,
+}
+
+fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, options: DownloadOptions, mut ready: impl FnMut(PathBuf)) -> Result<PathBuf, String> {
     if cancel.load(Ordering::Relaxed) { return Err("Download cancelled".into()); }
     let stage = staging_directory(root)?;
-    let path = stage.join("audio.webm");
+    let (filename, format) = match (options.video, options.save_data) {
+        (true, false) => ("video.mp4", "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"),
+        (true, true) => ("video.mp4", "worst[ext=mp4][vcodec^=avc1][acodec^=mp4a]"),
+        (false, false) => ("audio.webm", "bestaudio[ext=webm][acodec=opus][vcodec=none]"),
+        (false, true) => ("audio.webm", "worstaudio[ext=webm][acodec=opus][vcodec=none]"),
+    };
+    let path = stage.join(filename);
     let result = (|| {
         let mut command = command(executable);
         // WebM carries initialization before its audio clusters. Ordinary M4A may
         // put its moov box at EOF and must never be advertised as a growing file.
         // No conversion, merging, external downloader or temporary .part rename.
-        command.args(["--format", "bestaudio[ext=webm][acodec=opus][vcodec=none]",
+        command.args(["--format", format,
             "--fixup", "never", "--no-simulate", "--no-keep-video", "--no-part",
             "--concurrent-fragments", "1", "--print", "after_move:filepath", "--paths"]);
-        command.arg(&stage).args(["--output", "audio.webm", "--", url]);
+        command.arg(&stage).args(["--output", filename, "--", url]);
         let mut announced = false;
         let data = run_observing(command, cancel, Duration::from_secs(15 * 60), || {
-            if !announced && playable_prefix(&path) {
+            if !options.video && !announced && playable_prefix(&path) {
                 announced = true;
                 ready(path.clone());
             }
         })?;
         if cancel.load(Ordering::Relaxed) { return Err("Download cancelled".into()); }
         let completed = final_path(&stage, &data)?;
-        if completed != path { return Err("yt-dlp changed the progressive audio path".into()); }
+        if completed != path { return Err("yt-dlp changed the requested output path".into()); }
         Ok(completed)
     })();
     if result.is_err() { let _ = fs::remove_dir_all(&stage); }
@@ -459,6 +471,31 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
+    fn data_saving_video_uses_muxed_mp4_without_progressive_preview() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = staging_directory(&std::env::temp_dir()).unwrap();
+        let script = root.join("yt-dlp");
+        fs::write(&script, r#"#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --format) shift; test "$1" = 'worst[ext=mp4][vcodec^=avc1][acodec^=mp4a]' ;;
+        --paths) shift; stage=$1 ;;
+        --output) shift; output=$1 ;;
+    esac
+    shift
+done
+printf 'fixture' > "$stage/$output"
+printf '%s/%s\n' "$stage" "$output"
+"#).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = download_file("https://www.youtube.com/watch?v=dQw4w9WgXcQ", script.to_str().unwrap(), &root, &AtomicBool::new(false), DownloadOptions { video: true, save_data: true }, |_| panic!("video must wait for completion"));
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(result.unwrap().file_name().unwrap(), "video.mp4");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn progressive_webm_is_ready_before_downloader_exits() {
         use std::os::unix::fs::PermissionsExt;
         let root = staging_directory(&std::env::temp_dir()).unwrap();
@@ -469,7 +506,7 @@ mod tests {
         fs::write(&script, format!("#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --paths ]; then shift; stage=$1; fi; shift; done\ndd if='{}' of=\"$stage/audio.webm\" bs=1024 count=384 2>/dev/null\nwhile [ ! -f '{}' ]; do :; done\ndd if='{}' bs=1024 skip=384 2>/dev/null >> \"$stage/audio.webm\"\nprintf done > '{}'\nprintf '%s/audio.webm\\n' \"$stage\"\n", fixture.display(), release.display(), fixture.display(), ended.display())).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
         let mut early = None;
-        let completed = download_file("https://www.youtube.com/watch?v=dQw4w9WgXcQ", script.to_str().unwrap(), &root, &AtomicBool::new(false), |path| {
+        let completed = download_file("https://www.youtube.com/watch?v=dQw4w9WgXcQ", script.to_str().unwrap(), &root, &AtomicBool::new(false), DownloadOptions::default(), |path| {
             assert!(!ended.exists(), "preview must precede process completion");
             assert!(playable_prefix(&path));
             assert_eq!(fs::metadata(&path).unwrap().len(), 384 * 1024);

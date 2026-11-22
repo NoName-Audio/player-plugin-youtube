@@ -13,6 +13,7 @@ pub struct Plugin {
     searches: BTreeMap<String, std::result::Result<Vec<String>, String>>,
     results: BTreeMap<String, Value>,
     pending: BTreeSet<String>,
+    download_options: BTreeMap<String, service::DownloadOptions>,
     cover_pending: BTreeSet<String>,
     cover_attempted: BTreeSet<String>,
     previews: BTreeSet<String>,
@@ -37,8 +38,8 @@ impl Plugin {
     fn row(&self, id: &str) -> Value {
         let r = &self.results[id];
         json!({"id":id,"title":r["title"],"subtitle":r["artist"],"coverHash":r["coverHash"],"coverLoading":self.cover_pending.contains(id),"status":self.states.get(id),"actions":[
-            {"id":"play","label":if self.previews.contains(id){"Cancel preview"}else if self.playing(id) || self.preview_started.contains(id){"Stop preview"}else{"Preview"}},
-            {"id":"save","label":if self.saves.contains(id){"Cancel save"}else{"Save to library"}}]})
+            {"id":"play","downloadOptions":!self.previews.contains(id) && !self.playing(id) && !self.preview_started.contains(id),"label":if self.previews.contains(id){"Cancel preview"}else if self.playing(id) || self.preview_started.contains(id){"Stop preview"}else{"Preview"}},
+            {"id":"save","downloadOptions":!self.saves.contains(id),"label":if self.saves.contains(id){"Cancel save"}else{"Save to library"}}]})
     }
     fn search_rows(&self, key: &str) -> Vec<Value> {
         match self.searches.get(key) {
@@ -168,6 +169,18 @@ impl Plugin {
             self.cancel_unused(&id,host)?;
             return Ok(Value::Null);
         }
+        let options = service::DownloadOptions {
+            video: args["payload"]["video"].as_bool().unwrap_or(false),
+            save_data: args["payload"]["saveData"].as_bool().unwrap_or(false),
+        };
+        if self.download_options.get(&id).is_some_and(|previous| *previous != options) {
+            if self.pending.contains(&id) || self.preview_started.contains(&id) || self.playing(&id) {
+                return Err("Stop the preview or wait for the current download before choosing a different format or quality".into());
+            }
+            self.tokens.remove(&id);
+            self.paths.remove(&id);
+            self.completed.remove(&id);
+        }
         if action == "play" {
             let old: BTreeSet<_> = self.previews.union(&self.preview_started).cloned().collect();
             for old in old {
@@ -183,9 +196,10 @@ impl Plugin {
         if self.tokens.contains_key(&id) { return self.fulfill(&id,host); }
         if self.pending.contains(&id) { return Ok(Value::Null); }
         let url = text(&self.results[&id],"url");
-        if let Err(e) = self.service.download(id.clone(),url,self.executable(),self.root.clone()) {
+        if let Err(e) = self.service.download(id.clone(),url,self.executable(),self.root.clone(),options) {
             self.clear_intents(&id); self.states.insert(id,e.clone()); return Err(e);
         }
+        self.download_options.insert(id.clone(), options);
         self.pending.insert(id.clone()); self.states.insert(id,"Downloading…".into());
         Ok(Value::Null)
     }

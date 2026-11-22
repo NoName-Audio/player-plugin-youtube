@@ -34,8 +34,8 @@ class YoutubePluginService(context: Context) {
                 val id = entry.optString("id").takeIf(videoIdPattern::matches) ?: continue
                 results[id] = JSONObject().put("id", id).put("title", entry.optString("title", id))
                     .put("subtitle", entry.optString("uploader", ""))
-                    .put("actions", JSONArray().put(JSONObject().put("id", "play").put("label", "Preview"))
-                        .put(JSONObject().put("id", "save").put("label", "Save to library")))
+                    .put("actions", JSONArray().put(JSONObject().put("id", "play").put("label", "Preview").put("downloadOptions", true))
+                        .put(JSONObject().put("id", "save").put("label", "Save to library").put("downloadOptions", true)))
             }
             return JSONObject().put("items", JSONArray(results.values)).toString()
         }
@@ -56,12 +56,9 @@ class YoutubePluginService(context: Context) {
             check(response.getBoolean("ok")) { response.optString("error", "$name failed") }
             return response.get("value")
         }
-        val optionReply = JSONObject(host("share.downloadOptions", "{}"))
-        val options = when {
-            optionReply.getBoolean("ok") -> optionReply.optJSONObject("value")
-            !share && optionReply.optString("error") == "METHOD_NOT_FOUND" -> JSONObject()
-            else -> error(optionReply.optString("error", "Download options unavailable"))
-        } ?: return if (share) "{\"handled\":true}" else "null"
+        val options = if (share) {
+            invoke("share.downloadOptions") as? JSONObject ?: return "{\"handled\":true}"
+        } else args.getJSONObject("payload")
         val root = File((invoke("storage.staging") as JSONObject).getString("path"))
         val job = File(root, "${if (share) "share" else "result"}-${UUID.randomUUID()}")
         check(root.isAbsolute && job.mkdir()) { "Cannot create YouTube staging directory" }
