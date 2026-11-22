@@ -10,6 +10,7 @@ import java.net.URISyntaxException
 import android.os.Bundle
 import java.io.File
 import java.util.UUID
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** API v2 reflective entry point. Host callbacks are valid only during call(). */
@@ -20,35 +21,66 @@ class YoutubePluginService(context: Context) {
     fun pluginId() = "player.youtube"
     fun close() = Unit // No retained callbacks or background jobs.
 
+    private val results = LinkedHashMap<String, JSONObject>()
+
     fun call(method: String, argsJson: String, host: (String, String) -> String): String {
-        if (method == "canShare") return (videoId(JSONObject(argsJson).optString("url")) != null).toString()
-        if (method != "share") return when (method) {
+        val args = JSONObject(argsJson)
+        if (method == "canShare") return (videoId(args.optString("url")) != null).toString()
+        if (method == "search") {
+            val entries = YoutubeDownloader.search(runtime, args.getString("query").trim())
+            results.clear()
+            for (index in 0 until entries.length()) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val id = entry.optString("id").takeIf(videoIdPattern::matches) ?: continue
+                results[id] = JSONObject().put("id", id).put("title", entry.optString("title", id))
+                    .put("subtitle", entry.optString("uploader", ""))
+                    .put("actions", JSONArray().put(JSONObject().put("id", "play").put("label", "Preview"))
+                        .put(JSONObject().put("id", "save").put("label", "Save to library")))
+            }
+            return JSONObject().put("items", JSONArray(results.values)).toString()
+        }
+        if (method == "renderSearch") return "null"
+        if (method != "share" && method != "action") return when (method) {
             "activate", "deactivate", "poll", "playback" -> "null"
             else -> error("Unsupported plugin method: $method")
         }
-        val id = videoId(JSONObject(argsJson).optString("url")) ?: return "{\"handled\":false}"
+        val share = method == "share"
+        val action = if (share) "save" else args.getString("action")
+        require(action == "save" || action == "play") { "Unknown YouTube action" }
+        val id = if (share) videoId(args.optString("url")) ?: return "{\"handled\":false}"
+            else args.getJSONObject("payload").getString("resourceId").also {
+                require(results.containsKey(it)) { "Search again to restore this result" }
+            }
         fun invoke(name: String, args: JSONObject = JSONObject()): Any {
             val response = JSONObject(host(name, args.toString()))
             check(response.getBoolean("ok")) { response.optString("error", "$name failed") }
             return response.get("value")
         }
-        val options = invoke("share.downloadOptions") as? JSONObject ?: return "{\"handled\":true}"
+        val options = if (share) invoke("share.downloadOptions") as? JSONObject ?: return "{\"handled\":true}"
+            else JSONObject()
         val root = File((invoke("storage.staging") as JSONObject).getString("path"))
-        val job = File(root, "share-${UUID.randomUUID()}")
+        val job = File(root, "${if (share) "share" else "result"}-${UUID.randomUUID()}")
         check(root.isAbsolute && job.mkdir()) { "Cannot create YouTube staging directory" }
+        var keepForPlayback = false
         try {
             val audio = YoutubeDownloader.download(runtime, "https://www.youtube.com/watch?v=$id", job,
                 options.optBoolean("video"), options.optBoolean("saveData"))
             val resource = JSONObject().put("pluginId", pluginId()).put("resourceId", id)
-                .put("title", audio.nameWithoutExtension)
+                .put("title", results[id]?.optString("title") ?: audio.nameWithoutExtension)
+                .put("artist", results[id]?.optString("subtitle") ?: "")
             val token = invoke("media.register", JSONObject().put("path", audio.absolutePath)
                 .put("state", "completed").put("resource", resource)) as String
+            if (action == "play") {
+                invoke("host.play", JSONObject().put("sourceToken", token).put("resource", resource))
+                keepForPlayback = true
+                return "null"
+            }
             check(invoke("library.import", JSONObject().put("sourceToken", token)) is JSONObject) {
                 "Player did not confirm library import"
             }
-            return "{\"handled\":true}"
+            return if (share) "{\"handled\":true}" else "null"
         } finally {
-            job.deleteRecursively()
+            if (!keepForPlayback) job.deleteRecursively()
         }
     }
 }

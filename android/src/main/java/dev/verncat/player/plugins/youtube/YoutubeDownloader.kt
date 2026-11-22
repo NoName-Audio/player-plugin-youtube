@@ -6,8 +6,22 @@ import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
 import java.io.IOException
 import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
 
 object YoutubeDownloader {
+    fun search(context: Context, query: String): JSONArray {
+        require(query.isNotBlank() && query.length <= 500) { "Invalid YouTube query" }
+        YoutubeDL.init(context)
+        val request = YoutubeDLRequest("ytsearch30:$query").apply {
+            addOption("--ignore-config")
+            addOption("--flat-playlist")
+            addOption("--dump-single-json")
+            addOption("--skip-download")
+        }
+        return JSONObject(YoutubeDL.execute(request, redirectErrorStream = false).out).getJSONArray("entries")
+    }
+
     /** Blocking; returns a completed media file owned by the caller. */
     fun download(context: Context, url: String, directory: File, video: Boolean, saveData: Boolean): File {
         require(url.startsWith("https://", ignoreCase = true) || url.startsWith("http://", ignoreCase = true)) {

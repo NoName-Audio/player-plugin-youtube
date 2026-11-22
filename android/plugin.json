@@ -1,19 +1,22 @@
 {
   "id": "player.youtube",
   "name": "YouTube",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "apiVersion": 2,
-  "description": "Download shared YouTube audio or video to your library.",
+  "description": "Search YouTube, preview audio and download media to your library.",
   "platforms": [
     "android"
   ],
   "permissions": [
     "native.android",
+    "ui",
+    "playback.control",
     "storage",
     "media.source",
     "library.import"
   ],
   "contributions": [
+    { "id": "search", "kind": "search", "label": "YouTube" },
     {
       "id": "share",
       "kind": "share-handler",
