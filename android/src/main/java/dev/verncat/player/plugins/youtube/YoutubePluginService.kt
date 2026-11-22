@@ -56,8 +56,12 @@ class YoutubePluginService(context: Context) {
             check(response.getBoolean("ok")) { response.optString("error", "$name failed") }
             return response.get("value")
         }
-        val options = if (share) invoke("share.downloadOptions") as? JSONObject ?: return "{\"handled\":true}"
-            else JSONObject()
+        val optionReply = JSONObject(host("share.downloadOptions", "{}"))
+        val options = when {
+            optionReply.getBoolean("ok") -> optionReply.optJSONObject("value")
+            !share && optionReply.optString("error") == "METHOD_NOT_FOUND" -> JSONObject()
+            else -> error(optionReply.optString("error", "Download options unavailable"))
+        } ?: return if (share) "{\"handled\":true}" else "null"
         val root = File((invoke("storage.staging") as JSONObject).getString("path"))
         val job = File(root, "${if (share) "share" else "result"}-${UUID.randomUUID()}")
         check(root.isAbsolute && job.mkdir()) { "Cannot create YouTube staging directory" }
