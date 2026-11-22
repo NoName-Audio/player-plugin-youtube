@@ -383,7 +383,7 @@ fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, 
         // WebM carries initialization before its audio clusters. Ordinary M4A may
         // put its moov box at EOF and must never be advertised as a growing file.
         // No conversion, merging, external downloader or temporary .part rename.
-        command.args(["--format", "bestaudio[ext=webm][acodec=opus]",
+        command.args(["--format", "bestaudio[ext=webm][acodec=opus][vcodec=none]",
             "--fixup", "never", "--no-simulate", "--no-keep-video", "--no-part",
             "--concurrent-fragments", "1", "--print", "after_move:filepath", "--paths"]);
         command.arg(&stage).args(["--output", "audio.webm", "--", url]);

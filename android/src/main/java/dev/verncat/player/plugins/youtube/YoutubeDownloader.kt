@@ -40,7 +40,7 @@ object YoutubeDownloader {
                 addOption("--no-playlist")
                 addOption("--playlist-items", "1")
                 addOption("--no-progress")
-                val format = if (video) "[ext=mp4][vcodec^=avc1][acodec^=mp4a]" else "[ext=webm][acodec=opus]"
+                val format = if (video) "[ext=mp4][vcodec^=avc1][acodec^=mp4a]" else "[ext=webm][acodec=opus][vcodec=none]"
                 val best = if (video) "best" else "bestaudio"
                 val worst = if (video) "worst" else "worstaudio"
                 addOption("--format", (if (saveData) worst else best) + format)
