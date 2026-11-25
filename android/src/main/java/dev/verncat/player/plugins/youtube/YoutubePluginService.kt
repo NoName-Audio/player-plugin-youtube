@@ -52,26 +52,25 @@ class YoutubePluginService(context: Context) {
             "activate", "deactivate", "poll", "playback" -> "null"
             else -> error("Unsupported plugin method: $method")
         }
-        val share = method == "share"
-        if (share) playlistSearchUrl(args.optString("url"))?.let {
-            return JSONObject().put("handled", true).put("searchQuery", it).toString()
+        if (method == "share") {
+            val url = args.optString("url")
+            val query = playlistSearchUrl(url) ?: videoId(url)?.let { "https://www.youtube.com/watch?v=$it" }
+                ?: return "{\"handled\":false}"
+            return JSONObject().put("handled", true).put("searchQuery", query).toString()
         }
-        val action = if (share) "save" else args.getString("action")
+        val action = args.getString("action")
         require(action == "save" || action == "play") { "Unknown YouTube action" }
-        val id = if (share) videoId(args.optString("url")) ?: return "{\"handled\":false}"
-            else args.getJSONObject("payload").getString("resourceId").also {
-                require(results.containsKey(it)) { "Search again to restore this result" }
-            }
+        val options = args.getJSONObject("payload")
+        val id = options.getString("resourceId")
+        val result = requireNotNull(results[id]) { "Search again to restore this result" }
+        val title = result.optString("title", id)
         fun invoke(name: String, args: JSONObject = JSONObject()): Any {
             val response = JSONObject(host(name, args.toString()))
             check(response.getBoolean("ok")) { response.optString("error", "$name failed") }
             return response.get("value")
         }
-        val options = if (share) {
-            invoke("share.downloadOptions") as? JSONObject ?: return "{\"handled\":true}"
-        } else args.getJSONObject("payload")
         val root = File((invoke("storage.staging") as JSONObject).getString("path"))
-        val job = File(root, "${if (share) "share" else "result"}-${UUID.randomUUID()}")
+        val job = File(root, "result-${UUID.randomUUID()}")
         check(root.isAbsolute && job.mkdir()) { "Cannot create YouTube staging directory" }
         var keepForPlayback = false
         try {
@@ -99,7 +98,7 @@ class YoutubePluginService(context: Context) {
             check(invoke("library.import", JSONObject().put("sourceToken", token)) is JSONObject) {
                 "Player did not confirm library import"
             }
-            return if (share) "{\"handled\":true}" else "null"
+            return "null"
         } finally {
             if (!keepForPlayback) job.deleteRecursively()
         }

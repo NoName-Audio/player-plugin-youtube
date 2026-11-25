@@ -493,10 +493,10 @@ fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, 
         // No conversion, merging, external downloader or temporary .part rename.
         command.args(["--format", format,
             "--fixup", "never", "--no-simulate", "--no-keep-video", "--no-part",
-            "--concurrent-fragments", "1", "--print", "after_move:filepath", "--paths"]);
+            "--concurrent-fragments", "1", "--print", "after_move:filepath"]);
         command.args(["--quiet", "--progress", "--newline", "--progress-delta", "0.25", "--progress-template"])
             .arg(format!("download:{PROGRESS_PREFIX}%(progress.status)s:%(progress._percent)s"));
-        command.arg(&stage).args(["--output", filename, "--", url]);
+        command.arg("--paths").arg(&stage).args(["--output", filename, "--", url]);
         let mut announced = false;
         let latest = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
         let mut previous = f64::NAN.to_bits();
