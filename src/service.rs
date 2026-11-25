@@ -14,6 +14,8 @@ const OUTPUT_LIMIT: usize = 1024 * 1024;
 const ERROR_LIMIT: usize = 16 * 1024;
 const SEARCH_LIMIT: usize = 20;
 const PLAYLIST_SEARCH_LIMIT: usize = 120;
+const PROGRESS_PREFIX: &str = "player-youtube-progress:";
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -21,6 +23,7 @@ pub enum Event {
     Search { key: String, result: Result<Vec<Value>, String> },
     Download { id: String, result: Result<PathBuf, String> },
     Progress { id: String, path: PathBuf },
+    Percentage { id: String, percent: Option<f64> },
     Cover { id: String, result: Result<PathBuf, String> },
 }
 
@@ -134,6 +137,8 @@ impl Service {
         let worker = thread::Builder::new().name("youtube-download".into()).spawn(move || {
             let result = download_file(&url, &executable, &root, &signal, options, |path| {
                 let _ = sender.send((signal.clone(), Event::Progress { id: thread_id.clone(), path }));
+            }, |percent| {
+                let _ = sender.send((signal.clone(), Event::Percentage { id: thread_id.clone(), percent }));
             });
             let _ = sender.send((signal.clone(), Event::Download { id: thread_id, result }));
         }).map_err(|e| e.to_string())?;
@@ -159,11 +164,11 @@ impl Service {
             let key = match &event {
                 Event::Search { key, .. } => (true, key.clone()),
                 Event::Download { id, .. } => (false, id.clone()),
-                Event::Progress { id, .. } => (false, id.clone()),
+                Event::Progress { id, .. } | Event::Percentage { id, .. } => (false, id.clone()),
                 Event::Cover { .. } => unreachable!(),
             };
             let current = self.tokens.get(&key).is_some_and(|active| Arc::ptr_eq(active, &token));
-            if current && !matches!(&event, Event::Progress { .. }) { self.tokens.remove(&key); }
+            if current && !matches!(&event, Event::Progress { .. } | Event::Percentage { .. }) { self.tokens.remove(&key); }
             (current && !token.load(Ordering::Relaxed)).then_some(event)
         }).collect();
         events.extend(self.cover_receiver.try_iter());
@@ -237,18 +242,75 @@ fn capture(mut input: impl Read, limit: usize, overflow: Arc<AtomicBool>) -> io:
     }
 }
 
-fn run(command: Command, cancel: &AtomicBool, timeout: Duration) -> Result<Vec<u8>, String> {
-    run_observing(command, cancel, timeout, || {})
+fn reported_percentage(record: &[u8]) -> Option<f64> {
+    let record = std::str::from_utf8(record).ok()?;
+    let (status, value) = record.trim_end().split_once(':')?;
+    if !matches!(status, "downloading" | "finished") { return None; }
+    let value: f64 = value.trim().parse().ok()?;
+    value.is_finite().then(|| value.clamp(0.0, 100.0))
 }
 
-fn run_observing(mut command: Command, cancel: &AtomicBool, timeout: Duration, mut observe: impl FnMut()) -> Result<Vec<u8>, String> {
+// yt-dlp's newline progress printer shares stdout with --print. Demultiplex
+// before applying the output limit, retaining only the latest progress sample.
+fn capture_download(mut input: impl Read, overflow: &AtomicBool, latest: &AtomicU64) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut line = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0; 8192];
+    let prefix = PROGRESS_PREFIX.as_bytes();
+    let mut finish_line = |line: &[u8], truncated: bool| {
+        if let Some(record) = line.strip_prefix(prefix) {
+            if !truncated {
+                latest.store(reported_percentage(record).unwrap_or(f64::NAN).to_bits(), Ordering::Relaxed);
+            }
+        } else {
+            let keep = line.len().min(OUTPUT_LIMIT.saturating_sub(output.len()));
+            output.extend_from_slice(&line[..keep]);
+            if truncated || keep < line.len() { overflow.store(true, Ordering::Relaxed); }
+        }
+    };
+    loop {
+        let count = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        for chunk in buffer[..count].split_inclusive(|&byte| byte == b'\n') {
+            // Buffer only enough to identify the prefix before choosing a line limit.
+            let head = chunk.len().min(prefix.len().saturating_sub(line.len()));
+            line.extend_from_slice(&chunk[..head]);
+            let limit = if line.starts_with(prefix) { 128 } else { OUTPUT_LIMIT };
+            let rest = &chunk[head..];
+            let keep = rest.len().min(limit.saturating_sub(line.len()));
+            line.extend_from_slice(&rest[..keep]);
+            truncated |= keep < rest.len();
+            if chunk.ends_with(b"\n") {
+                finish_line(&line, truncated);
+                line.clear();
+                truncated = false;
+            }
+        }
+    }
+    if !line.is_empty() { finish_line(&line, truncated); }
+    Ok(output)
+}
+
+fn run(command: Command, cancel: &AtomicBool, timeout: Duration) -> Result<Vec<u8>, String> {
+    run_observing(command, cancel, timeout, None, || {})
+}
+
+fn run_observing(mut command: Command, cancel: &AtomicBool, timeout: Duration, latest: Option<Arc<AtomicU64>>, mut observe: impl FnMut()) -> Result<Vec<u8>, String> {
     if cancel.load(Ordering::Relaxed) { return Err("Download cancelled".into()); }
     let mut child = command.spawn().map_err(|e| format!("Cannot start yt-dlp (check its executable path): {e}"))?;
     let overflow = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().ok_or("Missing yt-dlp stdout")?;
     let stderr = child.stderr.take().ok_or("Missing yt-dlp stderr")?;
     let out_limit = overflow.clone();
-    let out = thread::spawn(move || capture(stdout, OUTPUT_LIMIT, out_limit));
+    let out = thread::spawn(move || match latest {
+        Some(latest) => capture_download(stdout, &out_limit, &latest),
+        None => capture(stdout, OUTPUT_LIMIT, out_limit),
+    });
     let err = thread::spawn(move || capture(stderr, ERROR_LIMIT, Arc::new(AtomicBool::new(false))));
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -414,7 +476,7 @@ pub struct DownloadOptions {
     pub save_data: bool,
 }
 
-fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, options: DownloadOptions, mut ready: impl FnMut(PathBuf)) -> Result<PathBuf, String> {
+fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, options: DownloadOptions, mut ready: impl FnMut(PathBuf), mut progress: impl FnMut(Option<f64>)) -> Result<PathBuf, String> {
     if cancel.load(Ordering::Relaxed) { return Err("Download cancelled".into()); }
     let stage = staging_directory(root)?;
     let (filename, format) = match (options.video, options.save_data) {
@@ -432,9 +494,24 @@ fn download_file(url: &str, executable: &str, root: &Path, cancel: &AtomicBool, 
         command.args(["--format", format,
             "--fixup", "never", "--no-simulate", "--no-keep-video", "--no-part",
             "--concurrent-fragments", "1", "--print", "after_move:filepath", "--paths"]);
+        command.args(["--quiet", "--progress", "--newline", "--progress-delta", "0.25", "--progress-template"])
+            .arg(format!("download:{PROGRESS_PREFIX}%(progress.status)s:%(progress._percent)s"));
         command.arg(&stage).args(["--output", filename, "--", url]);
         let mut announced = false;
-        let data = run_observing(command, cancel, Duration::from_secs(15 * 60), || {
+        let latest = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+        let mut previous = f64::NAN.to_bits();
+        let mut next_update = Instant::now();
+        let data = run_observing(command, cancel, Duration::from_secs(15 * 60), Some(latest.clone()), || {
+            let now = Instant::now();
+            if now >= next_update {
+                let sample = latest.load(Ordering::Relaxed);
+                if sample != previous {
+                    previous = sample;
+                    next_update = now + PROGRESS_INTERVAL;
+                    let percent = f64::from_bits(sample);
+                    progress(percent.is_finite().then_some(percent));
+                }
+            }
             if !options.video && !announced && playable_prefix(&path) {
                 announced = true;
                 ready(path.clone());
@@ -498,7 +575,7 @@ mod tests {
         process.args(["-c", "while :; do :; done"])
             .stdout(Stdio::piped()).stderr(Stdio::piped());
         let cancel = AtomicBool::new(false);
-        let error = run_observing(process, &cancel, Duration::from_secs(2), || {
+        let error = run_observing(process, &cancel, Duration::from_secs(2), None, || {
             cancel.store(true, Ordering::Relaxed);
         }).unwrap_err();
         assert!(error.contains("cancelled"));
@@ -514,16 +591,29 @@ set -eu
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --format) shift; test "$1" = 'worst[ext=mp4][vcodec^=avc1][acodec^=mp4a]' ;;
+        --progress-template) shift; test "$1" = 'download:player-youtube-progress:%(progress.status)s:%(progress._percent)s' ;;
         --paths) shift; stage=$1 ;;
         --output) shift; output=$1 ;;
     esac
     shift
 done
 printf 'fixture' > "$stage/$output"
+printf 'player-youtube-progress:downloading:42.5\n'
+for i in 1 2 3 4 5; do
+    [ ! -f "$stage/observed" ] || break
+    sleep 1
+done
+test -f "$stage/observed"
 printf '%s/%s\n' "$stage" "$output"
 "#).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-        let result = download_file("https://www.youtube.com/watch?v=dQw4w9WgXcQ", script.to_str().unwrap(), &root, &AtomicBool::new(false), DownloadOptions { video: true, save_data: true }, |_| panic!("video must wait for completion"));
+        let mut percentage = None;
+        let result = download_file("https://www.youtube.com/watch?v=dQw4w9WgXcQ", script.to_str().unwrap(), &root, &AtomicBool::new(false), DownloadOptions { video: true, save_data: true }, |_| panic!("video must wait for completion"), |percent| {
+            percentage = percent;
+            let stage = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().path()).find(|p| p.is_dir()).unwrap();
+            fs::write(stage.join("observed"), b"").unwrap();
+        });
+        assert_eq!(percentage, Some(42.5));
         fs::remove_dir_all(root).unwrap();
         assert_eq!(result.unwrap().file_name().unwrap(), "video.mp4");
     }
@@ -546,10 +636,27 @@ printf '%s/%s\n' "$stage" "$output"
             assert_eq!(fs::metadata(&path).unwrap().len(), 384 * 1024);
             early = Some(path);
             fs::write(&release, b"continue").unwrap();
-        }).unwrap();
+        }, |_| {}).unwrap();
         assert_eq!(early.as_ref(), Some(&completed));
         assert_eq!(fs::read(completed).unwrap(), fs::read(fixture).unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn download_capture_keeps_latest_percentage_and_final_path() {
+        let progress = format!("{PROGRESS_PREFIX}downloading:12.5\n");
+        let mut stdout = progress.repeat(OUTPUT_LIMIT / progress.len() + 1);
+        stdout.push_str(&format!("{PROGRESS_PREFIX}downloading:{}\n", "x".repeat(9000)));
+        stdout.push_str(&format!("{PROGRESS_PREFIX}downloading:53.125\r\n/tmp/audio.webm\n"));
+        let latest = AtomicU64::new(f64::NAN.to_bits());
+        let overflow = AtomicBool::new(false);
+        assert_eq!(capture_download(stdout.as_bytes(), &overflow, &latest).unwrap(), b"/tmp/audio.webm\n");
+        assert!(!overflow.load(Ordering::Relaxed));
+        assert_eq!(f64::from_bits(latest.load(Ordering::Relaxed)), 53.125);
+        for (record, expected) in [("downloading:NA", None), ("downloading:NaN", None),
+            ("downloading:101", Some(100.0)), ("finished:100.0", Some(100.0))] {
+            assert_eq!(reported_percentage(record.as_bytes()), expected);
+        }
     }
 
     #[test]
@@ -558,9 +665,10 @@ printf '%s/%s\n' "$stage" "$output"
         let token = Arc::new(AtomicBool::new(false));
         service.tokens.insert((false, "video".into()), token.clone());
         service.sender.send((token.clone(), Event::Progress { id: "video".into(), path: "audio.webm".into() })).unwrap();
+        service.sender.send((token.clone(), Event::Percentage { id: "video".into(), percent: Some(50.0) })).unwrap();
         service.sender.send((token, Event::Download { id: "video".into(), result: Ok("audio.webm".into()) })).unwrap();
         let events = service.drain();
-        assert!(matches!(&events[..], [Event::Progress { .. }, Event::Download { .. }]));
+        assert!(matches!(&events[..], [Event::Progress { .. }, Event::Percentage { .. }, Event::Download { .. }]));
         assert!(service.tokens.is_empty());
     }
 

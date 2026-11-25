@@ -23,6 +23,7 @@ pub struct Plugin {
     completed: BTreeSet<String>,
     preview_started: BTreeSet<String>,
     states: BTreeMap<String, String>,
+    percentages: BTreeMap<String, f64>,
     playback: Value,
     error: String,
     notice: String,
@@ -37,9 +38,11 @@ impl Plugin {
     }
     fn row(&self, id: &str) -> Value {
         let r = &self.results[id];
-        json!({"id":id,"title":r["title"],"subtitle":r["artist"],"coverHash":r["coverHash"],"coverLoading":self.cover_pending.contains(id),"status":self.states.get(id),"actions":[
+        let mut row = json!({"id":id,"title":r["title"],"subtitle":r["artist"],"coverHash":r["coverHash"],"coverLoading":self.cover_pending.contains(id),"status":self.states.get(id),"actions":[
             {"id":"play","downloadOptions":!self.previews.contains(id) && !self.playing(id) && !self.preview_started.contains(id),"label":if self.previews.contains(id){"Cancel preview"}else if self.playing(id) || self.preview_started.contains(id){"Stop preview"}else{"Preview"}},
-            {"id":"save","downloadOptions":!self.saves.contains(id),"label":if self.saves.contains(id){"Cancel save"}else{"Save to library"}}]})
+            {"id":"save","downloadOptions":!self.saves.contains(id),"label":if self.saves.contains(id){"Cancel save"}else{"Save to library"}}]});
+        if self.pending.contains(id) { row["progress"] = json!(self.percentages.get(id)); }
+        row
     }
     fn search_rows(&self, key: &str) -> Vec<Value> {
         match self.searches.get(key) {
@@ -60,6 +63,7 @@ impl Plugin {
     }
     fn cancel_unused(&mut self, id: &str, host: &dyn Host) -> Result {
         if !self.previews.contains(id) && !self.preview_started.contains(id) && !self.saves.contains(id) && self.pending.remove(id) {
+            self.percentages.remove(id);
             self.service.cancel(id);
             if let Some(path) = self.paths.remove(id) { host.call("media.state",json!({"path":path,"state":"cancelled"}))?; }
             self.tokens.remove(id); self.completed.remove(id); self.preview_started.remove(id);
@@ -137,8 +141,15 @@ impl Plugin {
                 }
                 self.fulfill(&id,host)?;
             }
+            service::Event::Percentage { id, percent } => {
+                if self.pending.contains(&id) {
+                    if let Some(percent) = percent { self.percentages.insert(id, percent); }
+                    else { self.percentages.remove(&id); }
+                }
+            }
             service::Event::Download { id, result } => {
                 if !self.pending.remove(&id) { return Ok(Value::Null); }
+                self.percentages.remove(&id);
                 match result {
                     Ok(path) => {
                         if let Some(active) = self.paths.get(&id) {
@@ -274,6 +285,24 @@ player_plugin_sdk::export_plugin!(Plugin,"player.youtube");
 mod tests {
     use super::*;
     use player_plugin_sdk::testing::TestHost;
+    #[test]
+    fn popup_reports_progress_only_while_pending() {
+        let mut p = ready();
+        let host = TestHost::new(|_, _| Ok(json!("source")));
+        p.states.insert("video".into(), "Downloading…".into());
+        p.pending.insert("video".into());
+        let row = |p: &mut Plugin| p.handle("render", Value::Null, &host).unwrap()["children"][1]["items"][0].clone();
+        assert_eq!(row(&mut p).get("progress"), Some(&Value::Null));
+        for percent in [Some(37.5), None, Some(80.0)] {
+            p.event(service::Event::Percentage { id: "video".into(), percent }, &host).unwrap();
+            assert_eq!(row(&mut p)["progress"], json!(percent));
+        }
+        assert!(host.calls.borrow().is_empty(), "telemetry must not start playback");
+        p.event(service::Event::Download { id: "video".into(), result: Ok("audio.webm".into()) }, &host).unwrap();
+        assert!(row(&mut p).get("progress").is_none());
+        assert!(p.percentages.is_empty());
+    }
+
     #[test]
     fn covers_propagate_and_failures_clear_loading() {
         let mut p = ready();
