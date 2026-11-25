@@ -10,6 +10,11 @@ import java.net.URISyntaxException
 import android.os.Bundle
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -70,11 +75,20 @@ class YoutubePluginService(context: Context) {
         check(root.isAbsolute && job.mkdir()) { "Cannot create YouTube staging directory" }
         var keepForPlayback = false
         try {
-            val audio = YoutubeDownloader.download(runtime, "https://www.youtube.com/watch?v=$id", job,
-                options.optBoolean("video"), options.optBoolean("saveData"))
+            fun progress(percent: Float?, active: Boolean) {
+                invoke("ui.downloadProgress", JSONObject().put("title", title)
+                    .put("percent", percent?.toDouble() ?: JSONObject.NULL).put("active", active))
+            }
+            val audio = try {
+                progress(null, true)
+                downloadWithProgress(runtime, "https://www.youtube.com/watch?v=$id", job,
+                    options.optBoolean("video"), options.optBoolean("saveData")) { progress(it, true) }
+            } finally {
+                progress(null, false)
+            }
             val resource = JSONObject().put("pluginId", pluginId()).put("resourceId", id)
-                .put("title", results[id]?.optString("title") ?: audio.nameWithoutExtension)
-                .put("artist", results[id]?.optString("subtitle") ?: "")
+                .put("title", title)
+                .put("artist", result.optString("subtitle", ""))
             val token = invoke("media.register", JSONObject().put("path", audio.absolutePath)
                 .put("state", "completed").put("resource", resource)) as String
             if (action == "play") {
@@ -89,6 +103,44 @@ class YoutubePluginService(context: Context) {
         } finally {
             if (!keepForPlayback) job.deleteRecursively()
         }
+    }
+}
+
+private fun downloadWithProgress(
+    context: Context, url: String, directory: File, video: Boolean, saveData: Boolean,
+    report: (Float) -> Unit,
+): File {
+    // YoutubeDL calls back on its stdout reader. Only the invocation thread calls the host.
+    val latest = AtomicReference<Float?>()
+    val task = FutureTask {
+        YoutubeDownloader.download(context, url, directory, video, saveData, latest::set)
+    }
+    val worker = Thread(task, "YouTube download").apply { start() }
+    var reported: Float? = null
+    fun publish() {
+        val percent = latest.get() ?: return
+        if (percent != reported) {
+            report(percent)
+            reported = percent
+        }
+    }
+    try {
+        while (true) {
+            val file = try {
+                task.get(200, TimeUnit.MILLISECONDS)
+            } catch (_: TimeoutException) {
+                publish()
+                continue
+            } catch (error: ExecutionException) {
+                throw error.cause ?: error
+            }
+            publish()
+            return file
+        }
+    } finally {
+        task.cancel(true)
+        // Do not delete the job directory while a canceled download is still unwinding.
+        worker.join()
     }
 }
 

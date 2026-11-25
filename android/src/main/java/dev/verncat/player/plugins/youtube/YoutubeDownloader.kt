@@ -50,7 +50,10 @@ object YoutubeDownloader {
     }
 
     /** Blocking; returns a completed media file owned by the caller. */
-    fun download(context: Context, url: String, directory: File, video: Boolean, saveData: Boolean): File {
+    internal fun download(
+        context: Context, url: String, directory: File, video: Boolean, saveData: Boolean,
+        onProgress: (Float) -> Unit,
+    ): File {
         require(url.startsWith("https://", ignoreCase = true) || url.startsWith("http://", ignoreCase = true)) {
             "Expected an HTTP or HTTPS video URL"
         }
@@ -66,7 +69,7 @@ object YoutubeDownloader {
                 addOption("--ignore-config")
                 addOption("--no-playlist")
                 addOption("--playlist-items", "1")
-                addOption("--no-progress")
+                addOption("--newline")
                 val format = if (video) "[ext=mp4][vcodec^=avc1][acodec^=mp4a]" else "[ext=webm][acodec=opus][vcodec=none]"
                 val best = if (video) "best" else "bestaudio"
                 val worst = if (video) "worst" else "worstaudio"
@@ -76,7 +79,9 @@ object YoutubeDownloader {
                 addOption("--restrict-filenames")
                 addOption("--output", "%(title).100B [%(id)s].%(ext)s")
             }
-            YoutubeDL.execute(request, redirectErrorStream = false)
+            YoutubeDL.execute(request, redirectErrorStream = false) { percent, _, _ ->
+                if (percent.isFinite() && percent >= 0f) onProgress(percent.coerceAtMost(100f))
+            }
             val extension = if (video) "mp4" else "webm"
             val audio = stage.listFiles()?.singleOrNull { it.isFile && it.extension == extension }
                 ?: throw IOException("yt-dlp did not produce one $extension file")
