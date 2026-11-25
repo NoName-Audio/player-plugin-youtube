@@ -12,6 +12,8 @@ use std::{
 
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const ERROR_LIMIT: usize = 16 * 1024;
+const SEARCH_LIMIT: usize = 20;
+const PLAYLIST_SEARCH_LIMIT: usize = 120;
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -80,7 +82,7 @@ impl Service {
         }
     }
     pub fn search(&mut self, key: String, query: String, executable: String) -> Result<(), String> {
-        let target = search_target(&query)?;
+        let (target, playlist) = search_target(&query)?;
         self.reap();
         self.tokens.retain(|(search, _), token| {
             if *search { token.store(true, Ordering::Relaxed); }
@@ -99,8 +101,14 @@ impl Service {
         let thread_key = key.clone();
         let worker = thread::Builder::new().name("youtube-search".into()).spawn(move || {
             let mut command = command(&executable);
+            let limit = if playlist {
+                command.args(["--yes-playlist", "--playlist-items"]).arg(format!("1:{PLAYLIST_SEARCH_LIMIT}"));
+                PLAYLIST_SEARCH_LIMIT
+            } else {
+                SEARCH_LIMIT
+            };
             command.args(["--flat-playlist", "--dump-single-json", "--skip-download", "--", &target]);
-            let result = run(command, &signal, Duration::from_secs(60)).and_then(|data| parse_search(&data));
+            let result = run(command, &signal, Duration::from_secs(60)).and_then(|data| parse_search(&data, limit));
             if !signal.load(Ordering::Relaxed) {
                 let _ = sender.send((signal.clone(), Event::Search { key: thread_key, result }));
             }
@@ -302,26 +310,52 @@ fn youtube_url(input: &str) -> Result<String, String> {
     Ok(format!("https://www.youtube.com/watch?v={id}"))
 }
 
-fn search_target(query: &str) -> Result<String, String> {
+fn search_target(query: &str) -> Result<(String, bool), String> {
     let query = query.trim();
-    if query.is_empty() { return Err("Enter a YouTube search or video URL".into()); }
+    if query.is_empty() { return Err("Enter a YouTube search, video URL, or playlist URL".into()); }
     if query.len() > 2048 { return Err("Search is too long".into()); }
     if query.contains("://") || query.starts_with("www.") || query.starts_with("youtu.be/") {
-        return youtube_url(query);
+        if let Some(playlist) = youtube_playlist_url(query)? { return Ok((playlist, true)); }
+        return youtube_url(query).map(|url| (url, false));
     }
-    Ok(format!("ytsearch20:{query}"))
+    Ok((format!("ytsearch{SEARCH_LIMIT}:{query}"), false))
 }
 
-fn parse_search(data: &[u8]) -> Result<Vec<Value>, String> {
+fn youtube_playlist_url(input: &str) -> Result<Option<String>, String> {
+    let Some(rest) = input.strip_prefix("https://").or_else(|| input.strip_prefix("http://")) else { return Ok(None) };
+    let Some((host, path)) = rest.split_once('/') else { return Ok(None) };
+    if !["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"]
+        .iter().any(|allowed| host.eq_ignore_ascii_case(allowed)) {
+        return Ok(None);
+    }
+    let path = path.split('#').next().unwrap_or("");
+    let (endpoint, query) = path.split_once('?').unwrap_or((path, ""));
+    if !matches!(endpoint, "playlist" | "watch") { return Ok(None); }
+
+    let mut lists = query.split('&').filter_map(|parameter| {
+        let (key, value) = parameter.split_once('=').unwrap_or((parameter, ""));
+        (key == "list").then_some(value)
+    });
+    let Some(id) = lists.next() else {
+        return if endpoint == "watch" { Ok(None) } else { Err("A valid YouTube playlist ID is required".into()) };
+    };
+    if !(1..=128).contains(&id.len()) || lists.next().is_some()
+        || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err("A valid YouTube playlist ID is required".into());
+    }
+    Ok(Some(format!("https://www.youtube.com/playlist?list={id}")))
+}
+
+fn parse_search(data: &[u8], limit: usize) -> Result<Vec<Value>, String> {
     let value: Value = serde_json::from_slice(data).map_err(|e| format!("Invalid yt-dlp JSON: {e}"))?;
-    let entries: Vec<&Value> = match value.get("entries") {
-        Some(Value::Array(entries)) => entries.iter().take(20).collect(),
+    let entries = match value.get("entries") {
+        Some(Value::Array(entries)) => entries.as_slice(),
         Some(_) => return Err("Invalid yt-dlp search entries".into()),
-        None => vec![&value],
+        None => std::slice::from_ref(&value),
     };
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for entry in entries {
+    for entry in entries.iter().take(limit) {
         let Some(id) = entry.get("id").and_then(Value::as_str).filter(|id| video_id(id)) else { continue };
         // Search is explicitly YouTube; reject a contradictory extractor URL.
         if let Some(url) = entry.get("webpage_url").or_else(|| entry.get("url")).and_then(Value::as_str) {
@@ -547,7 +581,7 @@ printf '%s/%s\n' "$stage" "$output"
     #[test]
     fn parser_extracts_real_thumbnail_metadata() {
         let row = json!({"id":"dQw4w9WgXcQ","thumbnails":[{"url":"https://i.ytimg.com/first.jpg"},{"url":"https://i.ytimg.com/best.webp"}]});
-        assert_eq!(parse_search(&serde_json::to_vec(&row).unwrap()).unwrap()[0]["thumbnail"], "https://i.ytimg.com/best.webp");
+        assert_eq!(parse_search(&serde_json::to_vec(&row).unwrap(), SEARCH_LIMIT).unwrap()[0]["thumbnail"], "https://i.ytimg.com/best.webp");
     }
     #[test]
     fn command_uses_private_runtime_and_no_external_components() {
@@ -581,20 +615,61 @@ printf '%s/%s\n' "$stage" "$output"
         for url in ["--exec=bad", "https://youtube.com.evil/watch?v=dQw4w9WgXcQ", "https://youtube.com@evil/watch?v=dQw4w9WgXcQ", "file:///tmp/a", "https://youtube.com/playlist?list=x", "https://vimeo.com/dQw4w9WgXcQ"] {
             assert!(youtube_url(url).is_err(), "{url}");
         }
-        assert_eq!(search_target("--exec bad").unwrap(), "ytsearch20:--exec bad");
+        assert_eq!(search_target("--exec bad").unwrap(), ("ytsearch20:--exec bad".into(), false));
         assert!(search_target("https://vimeo.com/123").is_err());
+    }
+
+    #[test]
+    fn playlist_search_canonicalizes_only_supported_urls() {
+        let canonical = "https://www.youtube.com/playlist?list=PL_valid-123";
+        for url in [
+            " https://m.youtube.com/playlist?si=share&list=PL_valid-123#ignored ",
+            "http://music.youtube.com/watch?list=PL_valid-123&index=2",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL_valid-123",
+        ] {
+            assert_eq!(search_target(url).unwrap(), (canonical.to_owned(), true));
+        }
+        for url in [
+            "https://youtube.com.evil/playlist?list=PL_valid",
+            "https://user@youtube.com/playlist?list=PL_valid",
+            "https://youtube.com:443/playlist?list=PL_valid",
+            "https://youtube.com/playlist/extra?list=PL_valid",
+            "https://youtube.com/playlist#?list=PL_valid",
+            "https://youtube.com/playlist?list=",
+            "https://youtube.com/playlist?list=PL%2Fvalid",
+            "https://youtube.com/watch?v=dQw4w9WgXcQ&list=PL_valid&list=PL_other",
+        ] {
+            assert!(search_target(url).is_err(), "{url}");
+        }
+        let watch = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        assert_eq!(search_target(watch).unwrap(), (watch.to_owned(), false));
+        assert_eq!(youtube_url(&format!("{watch}&list=PL_valid-123")).unwrap(), watch);
+        assert!(youtube_url(canonical).is_err());
+    }
+
+    #[test]
+    fn playlist_results_are_bounded_and_remain_single_video_urls() {
+        let entries: Vec<_> = (0..=PLAYLIST_SEARCH_LIMIT).map(|i| {
+            let id = format!("{i:011}");
+            json!({"url": format!("https://www.youtube.com/watch?v={id}&list=PL_valid"), "id": id})
+        }).collect();
+        let data = serde_json::to_vec(&json!({"entries": entries})).unwrap();
+        let playlist = parse_search(&data, PLAYLIST_SEARCH_LIMIT).unwrap();
+        assert_eq!(playlist.len(), 120);
+        assert_eq!(playlist[119]["url"], "https://www.youtube.com/watch?v=00000000119");
+        assert_eq!(parse_search(&data, SEARCH_LIMIT).unwrap().len(), 20);
     }
 
     #[test]
     fn parser_handles_direct_search_duplicates_and_bad_rows() {
         let row = json!({"id":"dQw4w9WgXcQ", "title":"Title", "uploader":"Artist", "duration":12.5});
-        assert_eq!(parse_search(&serde_json::to_vec(&row).unwrap()).unwrap()[0]["artist"], "Artist");
+        assert_eq!(parse_search(&serde_json::to_vec(&row).unwrap(), SEARCH_LIMIT).unwrap()[0]["artist"], "Artist");
         let data = json!({"entries":[row.clone(), row, null, {"id":"invalid"}, {"id":"abcdefghijk", "url":"https://vimeo.com/x"}]});
-        let rows = parse_search(&serde_json::to_vec(&data).unwrap()).unwrap();
+        let rows = parse_search(&serde_json::to_vec(&data).unwrap(), SEARCH_LIMIT).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["duration"], 12.5);
-        assert!(parse_search(b"not json").is_err());
-        assert!(parse_search(br#"{"entries":null}"#).is_err());
+        assert!(parse_search(b"not json", SEARCH_LIMIT).is_err());
+        assert!(parse_search(br#"{"entries":null}"#, SEARCH_LIMIT).is_err());
     }
 
     #[test]

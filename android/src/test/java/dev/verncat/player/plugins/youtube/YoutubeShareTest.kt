@@ -22,4 +22,26 @@ class YoutubeShareTest {
             assertNull(url, videoId(url))
         }
     }
+
+    @Test fun canonicalizesPlaylistSearchLinks() {
+        val list = "PLabc-123_xyz"
+        val canonical = "https://www.youtube.com/playlist?list=$list"
+        for (url in listOf(canonical, "http://M.YOUTUBE.COM/playlist?si=x&list=$list#fragment",
+            "https://music.youtube.com/watch?v=$id&list=$list&index=7",
+            "https://youtube.com/watch?list=$list")) {
+            assertEquals(url, canonical, playlistSearchUrl(url))
+        }
+    }
+
+    @Test fun rejectsMalformedAndUnrelatedPlaylistSearchLinks() {
+        for (url in listOf("https://youtube.com.evil.test/playlist?list=PLabc",
+            "https://user@youtube.com/playlist?list=PLabc", "https://youtube.com:443/playlist?list=PLabc",
+            "https://youtu.be/$id?list=PLabc", "https://youtube.com/playlist/extra?list=PLabc",
+            "https://youtube.com/watch?v=$id", "https://youtube.com/playlist?list=",
+            "https://youtube.com/playlist?list=PLabc&list", "https://youtube.com/playlist?list=PL%61bc",
+            "https://youtube.com/playlist?list=PLabc&list=PLother", "ftp://youtube.com/playlist?list=PLabc",
+            "https://youtube.com/playlist?list=${"a".repeat(129)}")) {
+            assertNull(url, playlistSearchUrl(url))
+        }
+    }
 }

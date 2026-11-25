@@ -25,11 +25,14 @@ class YoutubePluginService(context: Context) {
 
     fun call(method: String, argsJson: String, host: (String, String) -> String): String {
         val args = JSONObject(argsJson)
-        if (method == "canShare") return (videoId(args.optString("url")) != null).toString()
+        if (method == "canShare") {
+            val url = args.optString("url")
+            return (playlistSearchUrl(url) != null || videoId(url) != null).toString()
+        }
         if (method == "search") {
             val entries = YoutubeDownloader.search(runtime, args.getString("query").trim())
             results.clear()
-            for (index in 0 until entries.length()) {
+            for (index in 0 until minOf(entries.length(), SEARCH_RESULT_LIMIT)) {
                 val entry = entries.optJSONObject(index) ?: continue
                 val id = entry.optString("id").takeIf(videoIdPattern::matches) ?: continue
                 results[id] = JSONObject().put("id", id).put("title", entry.optString("title", id))
@@ -45,6 +48,9 @@ class YoutubePluginService(context: Context) {
             else -> error("Unsupported plugin method: $method")
         }
         val share = method == "share"
+        if (share) playlistSearchUrl(args.optString("url"))?.let {
+            return JSONObject().put("handled", true).put("searchQuery", it).toString()
+        }
         val action = if (share) "save" else args.getString("action")
         require(action == "save" || action == "play") { "Unknown YouTube action" }
         val id = if (share) videoId(args.optString("url")) ?: return "{\"handled\":false}"

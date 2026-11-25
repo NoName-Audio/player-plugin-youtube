@@ -5,21 +5,48 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
 import java.io.IOException
+import java.net.URI
+import java.net.URISyntaxException
 import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal const val SEARCH_RESULT_LIMIT = 120
+private val playlistIdPattern = Regex("[A-Za-z0-9_-]{1,128}")
+
+internal fun playlistSearchUrl(query: String): String? {
+    val uri = try { URI(query) } catch (_: URISyntaxException) { return null }
+    if (!uri.scheme.equals("https", true) && !uri.scheme.equals("http", true)) return null
+    when (uri.rawAuthority?.lowercase()) {
+        "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com" -> Unit
+        else -> return null
+    }
+    if (uri.rawPath != "/playlist" && uri.rawPath != "/watch") return null
+    val params = uri.rawQuery?.split('&') ?: return null
+    val list = params.singleOrNull { it.substringBefore('=') == "list" }
+        ?.substringAfter('=', "")?.takeIf(playlistIdPattern::matches) ?: return null
+    return "https://www.youtube.com/playlist?list=$list"
+}
+
 object YoutubeDownloader {
     fun search(context: Context, query: String): JSONArray {
         require(query.isNotBlank() && query.length <= 500) { "Invalid YouTube query" }
+        val playlistUrl = playlistSearchUrl(query)
+        val videoUrl = if (playlistUrl == null) videoId(query)?.let { "https://www.youtube.com/watch?v=$it" } else null
         YoutubeDL.init(context)
-        val request = YoutubeDLRequest("ytsearch30:$query").apply {
+        val request = YoutubeDLRequest(playlistUrl ?: videoUrl ?: "ytsearch30:$query").apply {
             addOption("--ignore-config")
             addOption("--flat-playlist")
             addOption("--dump-single-json")
             addOption("--skip-download")
+            if (playlistUrl != null) {
+                addOption("--yes-playlist")
+                addOption("--playlist-items", "1:$SEARCH_RESULT_LIMIT")
+            }
+            if (videoUrl != null) addOption("--no-playlist")
         }
-        return JSONObject(YoutubeDL.execute(request, redirectErrorStream = false).out).getJSONArray("entries")
+        val response = JSONObject(YoutubeDL.execute(request, redirectErrorStream = false).out)
+        return if (videoUrl != null) JSONArray().put(response) else response.getJSONArray("entries")
     }
 
     /** Blocking; returns a completed media file owned by the caller. */
