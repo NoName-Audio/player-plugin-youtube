@@ -103,6 +103,26 @@ jobs:
       - name: Build standalone APKs
         working-directory: android
         run: ./gradlew testDebugUnitTest assembleDebug
+      - name: Sign release APKs with the persistent plugin key
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_PLUGIN_KEYSTORE_BASE64 }}
+          KEYSTORE_ALIAS: ${{ secrets.ANDROID_PLUGIN_KEYSTORE_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_PLUGIN_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Missing ANDROID_PLUGIN_KEYSTORE_BASE64}"
+          : "${KEYSTORE_ALIAS:?Missing ANDROID_PLUGIN_KEYSTORE_ALIAS}"
+          : "${KEYSTORE_PASSWORD:?Missing ANDROID_PLUGIN_KEYSTORE_PASSWORD}"
+          umask 077
+          keystore=$(mktemp)
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          signer="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          for apk in android/build/outputs/apk/debug/youtube-*-debug.apk; do
+            "$signer" sign --ks "$keystore" --ks-key-alias "$KEYSTORE_ALIAS" --ks-pass env:KEYSTORE_PASSWORD "$apk"
+            "$signer" verify --print-certs "$apk"
+          done
       - name: Collect installable ABI-specific APKs
         run: |
           mkdir -p dist
@@ -142,7 +162,7 @@ jobs:
           test "$(find dist -name '*.apk' -type f | wc -l)" -eq 4
           (cd dist && sha256sum *.player-plugin *.apk > SHA256SUMS)
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "YouTube ${RELEASE_TAG}" --notes 'Choose a desktop .player-plugin package or the standalone Android APK matching your CPU. Android builds use a CI debug signer; updates from another run require uninstalling the previous APK and reviewing the plugin again in Player.'
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "YouTube ${RELEASE_TAG}" --notes 'Choose a desktop .player-plugin package or the standalone Android APK matching your CPU. If migrating from an older CI debug-signed APK, uninstall that APK once and approve the new signer in Player. Future releases signed with the same key can update in place.'
           fi
           gh release upload "$RELEASE_TAG" dist/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false

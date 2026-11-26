@@ -16,3 +16,7 @@ Use the result’s **Preview** menu to choose audio or video and quality, or **S
 On Android, **Save to library** reuses the latest completed preview if the video ID, format, and quality match and the preview file is still available.
 
 On Android, open **Settings → Plugins → YouTube**. **Sign in via WebView** opens Google’s sign-in page; after returning to YouTube, choose **Use this session**. Google may block sign-in in embedded browsers. Alternatively, select **Import cookies.txt** and choose a Netscape-format cookie file from your signed-in YouTube session. Treat the file like a password. **Remove cookies** clears the session stored for downloads. HTTP 403 can also occur for reasons unrelated to sign-in.
+
+Tagged Android releases use a persistent signing key. If you installed an older CI debug-signed APK, uninstall it once, install the new APK, and approve it in Player. Future releases signed with the same key can update in place.
+
+Release maintainers: configure `ANDROID_PLUGIN_KEYSTORE_BASE64`, `ANDROID_PLUGIN_KEYSTORE_ALIAS`, and `ANDROID_PLUGIN_KEYSTORE_PASSWORD` in the YouTube repository’s Actions secrets. Keep a secure backup of the keystore and reuse it for every release and ABI. The key entry and keystore must use the same password. Never commit the keystore.
