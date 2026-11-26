@@ -29,11 +29,40 @@ internal fun playlistSearchUrl(query: String): String? {
 }
 
 object YoutubeDownloader {
+    private const val updateInterval = 24 * 60 * 60 * 1000L
+    private fun updatePrefs(context: Context) = context.getSharedPreferences("player_youtube_updates", Context.MODE_PRIVATE)
+    var updateError: String? = null
+        private set
+
+    fun version(context: Context): String {
+        YoutubeDL.init(context)
+        return YoutubeDL.execute(YoutubeDLRequest(emptyList<String>()).apply { addOption("--version") }).out.trim()
+    }
+
+    fun update(context: Context) {
+        YoutubeDL.init(context)
+        updatePrefs(context).edit().putLong("lastAttempt", System.currentTimeMillis()).apply()
+        try {
+            YoutubeDL.updateYoutubeDL(context, YoutubeDL.UpdateChannel.STABLE)
+            updateError = null
+        } catch (error: Exception) {
+            updateError = "Could not update yt-dlp: ${error.message ?: error.javaClass.simpleName}".take(1000)
+            throw IllegalStateException(updateError, error)
+        }
+    }
+
+    private fun prepare(context: Context) {
+        YoutubeDL.init(context)
+        val elapsed = System.currentTimeMillis() - updatePrefs(context).getLong("lastAttempt", 0)
+        if (elapsed !in 0 until updateInterval) {
+            try { update(context) } catch (_: IllegalStateException) { /* Keep using the installed version; settings show the error. */ }
+        }
+    }
     fun search(context: Context, query: String): JSONArray {
         require(query.isNotBlank() && query.length <= 500) { "Invalid YouTube query" }
         val playlistUrl = playlistSearchUrl(query)
         val videoUrl = if (playlistUrl == null) videoId(query)?.let { "https://www.youtube.com/watch?v=$it" } else null
-        YoutubeDL.init(context)
+        prepare(context)
         val request = YoutubeDLRequest(playlistUrl ?: videoUrl ?: "ytsearch30:$query").apply {
             addOption("--ignore-config")
             addOption("--flat-playlist")
@@ -58,7 +87,7 @@ object YoutubeDownloader {
         require(url.startsWith("https://", ignoreCase = true) || url.startsWith("http://", ignoreCase = true)) {
             "Expected an HTTP or HTTPS video URL"
         }
-        YoutubeDL.init(context)
+        prepare(context)
         if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) {
             throw IOException("Cannot create download directory: $directory")
         }

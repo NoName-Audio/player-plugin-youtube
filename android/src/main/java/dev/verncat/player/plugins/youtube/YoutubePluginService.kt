@@ -61,6 +61,11 @@ class YoutubePluginService(context: Context) {
                 .put(JSONObject().put("type", "input").put("key", "cookies").put("inputType", "text-file").put("action", "set-cookies").put("label", "Import cookies.txt"))
             return JSONObject().put("type", "group").put("layout", "cards").put("children", JSONArray()
                 .put(JSONObject().put("type", "group").put("layout", "card").put("title", "YouTube account").put("children", accountActions))
+                .put(JSONObject().put("type", "group").put("layout", "card").put("title", "Downloader").put("children", JSONArray()
+                    .put(JSONObject().put("type", "text").put("text", runCatching { "yt-dlp ${YoutubeDownloader.version(runtime)}" }
+                        .getOrElse { "Could not read yt-dlp version: ${it.message}" }))
+                    .apply { YoutubeDownloader.updateError?.let { put(JSONObject().put("type", "text").put("tone", "error").put("text", it)) } }
+                    .put(JSONObject().put("type", "button").put("action", "update-downloader").put("label", "Update yt-dlp"))))
                 .put(JSONObject().put("type", "group").put("layout", "card").put("title", "Manual import").put("children", importActions))).toString()
         }
         if (method == "canShare") {
@@ -92,6 +97,10 @@ class YoutubePluginService(context: Context) {
             return JSONObject().put("handled", true).put("searchQuery", query).toString()
         }
         val action = args.getString("action")
+        if (action == "update-downloader") {
+            YoutubeDownloader.update(runtime)
+            return "null"
+        }
         if (action == "web-sign-in") {
             invoke("host.navigate", JSONObject().put("pageId", "sign-in"))
             return "null"
