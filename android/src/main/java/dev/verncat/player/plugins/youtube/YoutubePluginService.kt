@@ -21,15 +21,47 @@ import org.json.JSONObject
 /** API v2 reflective entry point. Host callbacks are valid only during call(). */
 class YoutubePluginService(context: Context) {
     private val runtime = YoutubeContext(context.applicationContext)
+    private var activity: java.lang.ref.WeakReference<Activity>? = null
+
+    constructor(owner: Activity) : this(owner.applicationContext) {
+        activity = java.lang.ref.WeakReference(owner)
+    }
 
     fun apiVersion() = 2
     fun pluginId() = "player.youtube"
     fun close() = Unit // No retained callbacks or background jobs.
 
     private val results = LinkedHashMap<String, JSONObject>()
+    private data class DownloadKey(val id: String, val video: Boolean, val saveData: Boolean)
+    private var preview: Pair<DownloadKey, File>? = null
 
     fun call(method: String, argsJson: String, host: (String, String) -> String): String {
         val args = JSONObject(argsJson)
+        fun invoke(name: String, args: JSONObject = JSONObject()): Any {
+            val response = JSONObject(host(name, args.toString()))
+            check(response.getBoolean("ok")) { response.optString("error", "$name failed") }
+            return response.get("value")
+        }
+        val cookieKey = JSONObject().put("key", "youtube-cookies")
+        val avatarKey = JSONObject().put("key", "youtube-avatar")
+        if (method == "render") {
+            if (args.optString("viewId") != "authorization") return "null"
+            val configured = invoke("secrets.has", cookieKey) == true
+            val account = JSONObject().put("type", "account")
+                .put("text", if (configured) "YouTube session saved" else "Not signed in to YouTube")
+            if (configured && invoke("secrets.has", avatarKey) == true) {
+                account.put("avatarUrl", invoke("secrets.get", avatarKey))
+            }
+            val accountActions = JSONArray().put(account)
+                .put(JSONObject().put("type", "button").put("action", "web-sign-in").put("label", "Sign in via WebView"))
+            if (configured) accountActions.put(JSONObject().put("type", "button").put("action", "delete-cookies").put("label", "Remove cookies"))
+            val importActions = JSONArray()
+                .put(JSONObject().put("type", "text").put("text", "Use a Netscape-format cookies.txt from your YouTube session. Treat the file like a password."))
+                .put(JSONObject().put("type", "input").put("key", "cookies").put("inputType", "text-file").put("action", "set-cookies").put("label", "Import cookies.txt"))
+            return JSONObject().put("type", "group").put("layout", "cards").put("children", JSONArray()
+                .put(JSONObject().put("type", "group").put("layout", "card").put("title", "YouTube account").put("children", accountActions))
+                .put(JSONObject().put("type", "group").put("layout", "card").put("title", "Manual import").put("children", importActions))).toString()
+        }
         if (method == "canShare") {
             val url = args.optString("url")
             return (playlistSearchUrl(url) != null || videoId(url) != null).toString()
@@ -59,15 +91,49 @@ class YoutubePluginService(context: Context) {
             return JSONObject().put("handled", true).put("searchQuery", query).toString()
         }
         val action = args.getString("action")
+        if (action == "web-sign-in") {
+            val owner = activity?.get() ?: error("WebView sign-in requires an updated Player")
+            val session = YoutubeSignIn.open(owner) ?: return "null"
+            invoke("secrets.delete", avatarKey)
+            invoke("secrets.set", cookieKey.put("value", android.util.Base64.encodeToString(session.cookies, android.util.Base64.NO_WRAP)))
+            session.avatarUrl?.let { invoke("secrets.set", avatarKey.put("value", it)) }
+            return "null"
+        }
+        if (action == "set-cookies") {
+            val text = args.getJSONObject("payload").getString("text").removePrefix("\uFEFF").replace("\r\n", "\n")
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            require(bytes.size <= 64 * 1024 && text.lineSequence().firstOrNull() in listOf("# Netscape HTTP Cookie File", "# HTTP Cookie File")) {
+                "Expected a Netscape cookies.txt file no larger than 64 KiB"
+            }
+            invoke("secrets.delete", avatarKey)
+            invoke("secrets.set", cookieKey.put("value", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)))
+            return "null"
+        }
+        if (action == "delete-cookies") {
+            invoke("secrets.delete", avatarKey)
+            invoke("secrets.delete", cookieKey)
+            return "null"
+        }
         require(action == "save" || action == "play") { "Unknown YouTube action" }
         val options = args.getJSONObject("payload")
         val id = options.getString("resourceId")
         val result = requireNotNull(results[id]) { "Search again to restore this result" }
         val title = result.optString("title", id)
-        fun invoke(name: String, args: JSONObject = JSONObject()): Any {
-            val response = JSONObject(host(name, args.toString()))
-            check(response.getBoolean("ok")) { response.optString("error", "$name failed") }
-            return response.get("value")
+        val key = DownloadKey(id, options.optBoolean("video"), options.optBoolean("saveData"))
+        val resource = JSONObject().put("pluginId", pluginId()).put("resourceId", id)
+            .put("title", title)
+            .put("artist", result.optString("subtitle", ""))
+        fun register(file: File): String = invoke("media.register", JSONObject().put("path", file.absolutePath)
+            .put("state", "completed").put("resource", resource)) as String
+        fun save(token: String) {
+            check(invoke("library.import", JSONObject().put("sourceToken", token)) is JSONObject) {
+                "Player did not confirm library import"
+            }
+        }
+        val cached = preview?.takeIf { it.first == key }?.second
+        if (action == "save" && cached != null && cached.isFile && cached.length() > 0) {
+            save(register(cached))
+            return "null"
         }
         val root = File((invoke("storage.staging") as JSONObject).getString("path"))
         val job = File(root, "result-${UUID.randomUUID()}")
@@ -78,26 +144,24 @@ class YoutubePluginService(context: Context) {
                 invoke("ui.downloadProgress", JSONObject().put("title", title)
                     .put("percent", percent?.toDouble() ?: JSONObject.NULL).put("active", active))
             }
+            val cookies = if (invoke("secrets.has", cookieKey) == true) {
+                android.util.Base64.decode(invoke("secrets.get", cookieKey) as String, android.util.Base64.DEFAULT)
+            } else null
             val audio = try {
                 progress(null, true)
                 downloadWithProgress(runtime, "https://www.youtube.com/watch?v=$id", job,
-                    options.optBoolean("video"), options.optBoolean("saveData")) { progress(it, true) }
+                    key.video, key.saveData, cookies) { progress(it, true) }
             } finally {
                 progress(null, false)
             }
-            val resource = JSONObject().put("pluginId", pluginId()).put("resourceId", id)
-                .put("title", title)
-                .put("artist", result.optString("subtitle", ""))
-            val token = invoke("media.register", JSONObject().put("path", audio.absolutePath)
-                .put("state", "completed").put("resource", resource)) as String
+            val token = register(audio)
             if (action == "play") {
                 invoke("host.play", JSONObject().put("sourceToken", token).put("resource", resource))
                 keepForPlayback = true
+                preview = key to audio
                 return "null"
             }
-            check(invoke("library.import", JSONObject().put("sourceToken", token)) is JSONObject) {
-                "Player did not confirm library import"
-            }
+            save(token)
             return "null"
         } finally {
             if (!keepForPlayback) job.deleteRecursively()
@@ -106,13 +170,13 @@ class YoutubePluginService(context: Context) {
 }
 
 private fun downloadWithProgress(
-    context: Context, url: String, directory: File, video: Boolean, saveData: Boolean,
+    context: Context, url: String, directory: File, video: Boolean, saveData: Boolean, cookies: ByteArray?,
     report: (Float) -> Unit,
 ): File {
     // YoutubeDL calls back on its stdout reader. Only the invocation thread calls the host.
     val latest = AtomicReference<Float?>()
     val task = FutureTask {
-        YoutubeDownloader.download(context, url, directory, video, saveData, latest::set)
+        YoutubeDownloader.download(context, url, directory, video, saveData, cookies, latest::set)
     }
     val worker = Thread(task, "YouTube download").apply { start() }
     var reported: Float? = null

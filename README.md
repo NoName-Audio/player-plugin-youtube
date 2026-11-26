@@ -12,3 +12,7 @@ With a compatible Player build, paste a YouTube playlist URL (including `watch?v
 On Android, **Share → Player** opens the YouTube search tab for a video or playlist link. If more than one enabled plugin handles the link, Player asks which one to use.
 
 Use the result’s **Preview** menu to choose audio or video and quality, or **Save to library** to save it.
+
+On Android, **Save to library** reuses the latest completed preview if the video ID, format, and quality match and the preview file is still available.
+
+On Android, open **Settings → Plugins → YouTube**. **Sign in via WebView** opens Google’s sign-in page; after returning to YouTube, choose **Use this session**. Google may block sign-in in embedded browsers. Alternatively, select **Import cookies.txt** and choose a Netscape-format cookie file from your signed-in YouTube session. Treat the file like a password. **Remove cookies** clears the session stored for downloads. HTTP 403 can also occur for reasons unrelated to sign-in.

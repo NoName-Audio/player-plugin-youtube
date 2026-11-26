@@ -52,6 +52,7 @@ object YoutubeDownloader {
     /** Blocking; returns a completed media file owned by the caller. */
     internal fun download(
         context: Context, url: String, directory: File, video: Boolean, saveData: Boolean,
+        cookies: ByteArray?,
         onProgress: (Float) -> Unit,
     ): File {
         require(url.startsWith("https://", ignoreCase = true) || url.startsWith("http://", ignoreCase = true)) {
@@ -67,6 +68,11 @@ object YoutubeDownloader {
         try {
             val request = YoutubeDLRequest(url).apply {
                 addOption("--ignore-config")
+                if (cookies != null) {
+                    val cookieFile = File(stage, "cookies.txt")
+                    cookieFile.writeBytes(cookies)
+                    addOption("--cookies", cookieFile.absolutePath)
+                }
                 addOption("--no-playlist")
                 addOption("--playlist-items", "1")
                 addOption("--newline")
