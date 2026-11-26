@@ -73,7 +73,8 @@ class YoutubePluginService(context: Context) {
             return (playlistSearchUrl(url) != null || videoId(url) != null).toString()
         }
         if (method == "search") {
-            val entries = YoutubeDownloader.search(runtime, args.getString("query").trim())
+            val query = args.getString("query").trim()
+            val entries = YoutubeDownloader.search(runtime, query)
             results.clear()
             for (index in 0 until minOf(entries.length(), SEARCH_RESULT_LIMIT)) {
                 val entry = entries.optJSONObject(index) ?: continue
@@ -83,7 +84,10 @@ class YoutubePluginService(context: Context) {
                     .put("actions", JSONArray().put(JSONObject().put("id", "play").put("label", "Preview").put("downloadOptions", true))
                         .put(JSONObject().put("id", "save").put("label", "Save to library").put("downloadOptions", true)))
             }
-            return JSONObject().put("items", JSONArray(results.values)).toString()
+            return JSONObject().put("items", JSONArray(results.values)).apply {
+                if (playlistSearchUrl(query) != null) put("batch", JSONObject().put("action", "save")
+                    .put("label", "Download selected (audio)").put("payload", JSONObject().put("video", false).put("saveData", false)))
+            }.toString()
         }
         if (method == "renderSearch") return "null"
         if (method != "share" && method != "action") return when (method) {
@@ -124,7 +128,7 @@ class YoutubePluginService(context: Context) {
             invoke("secrets.delete", avatarKey)
             invoke("secrets.set", cookieKey.put("value", android.util.Base64.encodeToString(session.cookies, android.util.Base64.NO_WRAP)))
             session.avatarUrl?.let { invoke("secrets.set", avatarKey.put("value", it)) }
-            return "null"
+            return JSONObject().put("settingsId", "authorization").toString()
         }
         if (action == "set-cookies") {
             val text = args.getJSONObject("payload").getString("text").removePrefix("\uFEFF").replace("\r\n", "\n")
@@ -140,6 +144,12 @@ class YoutubePluginService(context: Context) {
             invoke("secrets.delete", avatarKey)
             invoke("secrets.delete", cookieKey)
             return "null"
+        }
+        if (action == "like-preview") {
+            val token = args.getJSONObject("payload").getString("sourceToken")
+            val track = invoke("library.import", JSONObject().put("sourceToken", token))
+            check(track is JSONObject) { "Player did not confirm library import" }
+            return track.toString()
         }
         require(action == "save" || action == "play") { "Unknown YouTube action" }
         val options = args.getJSONObject("payload")

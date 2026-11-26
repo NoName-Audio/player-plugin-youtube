@@ -1,7 +1,7 @@
 {
   "id": "player.youtube",
   "name": "YouTube",
-  "version": "1.1.11",
+  "version": "1.1.12",
   "apiVersion": 2,
   "description": "Search YouTube, preview audio and download media to your library.",
   "platforms": [
@@ -18,8 +18,21 @@
   ],
   "contributions": [
     { "id": "search", "kind": "search", "label": "YouTube" },
+    { "id": "like-preview", "kind": "preview-like", "label": "Save preview" },
     { "id": "authorization", "kind": "settings", "label": "YouTube" },
-    { "id": "sign-in", "kind": "page", "label": "YouTube sign-in", "showInMenu": false },
+    {
+      "id": "sign-in",
+      "kind": "page",
+      "label": "YouTube sign-in",
+      "showInMenu": false,
+      "nativePage": {
+        "positionAction": "sign-in-position",
+        "hideAction": "sign-in-hide",
+        "closeAction": "sign-in-close",
+        "submitAction": "sign-in-save",
+        "submitLabel": "Use this session"
+      }
+    },
     {
       "id": "share",
       "kind": "share-handler",

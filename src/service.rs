@@ -372,7 +372,7 @@ fn youtube_url(input: &str) -> Result<String, String> {
     Ok(format!("https://www.youtube.com/watch?v={id}"))
 }
 
-fn search_target(query: &str) -> Result<(String, bool), String> {
+pub(crate) fn search_target(query: &str) -> Result<(String, bool), String> {
     let query = query.trim();
     if query.is_empty() { return Err("Enter a YouTube search, video URL, or playlist URL".into()); }
     if query.len() > 2048 { return Err("Search is too long".into()); }

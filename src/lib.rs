@@ -175,6 +175,12 @@ impl Plugin {
     }
     fn action(&mut self, args: Value, host: &dyn Host) -> Result {
         let action = text(&args,"action");
+        if action == "like-preview" {
+            let token = text(&args["payload"], "sourceToken");
+            let track = host.call("library.import", json!({"sourceToken": token}))?;
+            if track.is_null() { return Err("The downloaded file could not be indexed".into()); }
+            return Ok(track);
+        }
         if action != "play" && action != "save" { return Err("Unknown action".into()); }
         let id = text(&args["payload"],"resourceId");
         if !self.results.contains_key(&id) { return Err("Search again to restore this result".into()); }
@@ -253,8 +259,14 @@ impl Plugin {
             "search" => {
                 self.serial += 1;
                 let key = format!("youtube-search:{}",self.serial);
-                self.service.search(key.clone(),text(&args,"query"),self.executable())?;
-                Ok(self.search_response(&key))
+                let query = text(&args,"query");
+                let (_, playlist) = service::search_target(&query)?;
+                self.service.search(key.clone(),query,self.executable())?;
+                let mut response = self.search_response(&key);
+                if playlist {
+                    response["batch"] = json!({"action":"save","label":"Download selected (audio)","payload":{"video":false,"saveData":false}});
+                }
+                Ok(response)
             }
             "renderSearch" => {
                 let ids: Vec<_> = args["ids"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
