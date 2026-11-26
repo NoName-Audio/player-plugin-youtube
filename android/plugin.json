@@ -19,6 +19,7 @@
   "contributions": [
     { "id": "search", "kind": "search", "label": "YouTube" },
     { "id": "authorization", "kind": "settings", "label": "YouTube" },
+    { "id": "sign-in", "kind": "page", "label": "YouTube sign-in", "showInMenu": false },
     {
       "id": "share",
       "kind": "share-handler",

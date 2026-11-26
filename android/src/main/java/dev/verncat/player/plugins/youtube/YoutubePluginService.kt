@@ -26,10 +26,11 @@ class YoutubePluginService(context: Context) {
     constructor(owner: Activity) : this(owner.applicationContext) {
         activity = java.lang.ref.WeakReference(owner)
     }
+    private val signIn = YoutubeSignIn()
 
     fun apiVersion() = 2
     fun pluginId() = "player.youtube"
-    fun close() = Unit // No retained callbacks or background jobs.
+    fun close() { activity?.get()?.let(signIn::close) }
 
     private val results = LinkedHashMap<String, JSONObject>()
     private data class DownloadKey(val id: String, val video: Boolean, val saveData: Boolean)
@@ -92,8 +93,25 @@ class YoutubePluginService(context: Context) {
         }
         val action = args.getString("action")
         if (action == "web-sign-in") {
+            invoke("host.navigate", JSONObject().put("pageId", "sign-in"))
+            return "null"
+        }
+        if (action in setOf("sign-in-position", "sign-in-close", "sign-in-save", "sign-in-hide")) {
             val owner = activity?.get() ?: error("WebView sign-in requires an updated Player")
-            val session = YoutubeSignIn.open(owner) ?: return "null"
+            if (action == "sign-in-hide") {
+                signIn.hide(owner)
+                return "null"
+            }
+            if (action == "sign-in-close") {
+                signIn.close(owner)
+                return "null"
+            }
+            if (action == "sign-in-position") {
+                val rect = args.getJSONObject("payload")
+                signIn.position(owner, rect.getInt("x"), rect.getInt("y"), rect.getInt("width"), rect.getInt("height"))
+                return "null"
+            }
+            val session = signIn.session(owner)
             invoke("secrets.delete", avatarKey)
             invoke("secrets.set", cookieKey.put("value", android.util.Base64.encodeToString(session.cookies, android.util.Base64.NO_WRAP)))
             session.avatarUrl?.let { invoke("secrets.set", avatarKey.put("value", it)) }
